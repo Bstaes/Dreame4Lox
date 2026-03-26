@@ -1,65 +1,65 @@
 # Dreame4Lox — LoxBerry Plugin
 
-Control your Dreame robot vacuums (X50 Ultra, L40 Ultra, and other miio-compatible models) directly from your Loxone Miniserver via LoxBerry — **no Home Assistant required**.
+Control and monitor your Dreame robot vacuums from Loxone — directly via the
+Dreame Home cloud. No Home Assistant, no Mi Home app, no local token extraction.
+
+Tested with: **X50 Ultra**, **L40 Ultra AE**
 
 ---
 
 ## How It Works
 
 ```
-Dreame Robot (local LAN)
-      ↕  miio protocol (UDP 54321)
+Dreame Robot
+    ↕  Dreame Home cloud (Alibaba IoT)
 LoxBerry (Raspberry Pi)
-  ├─ dreame_bridge.py  ← polls robot state every N seconds
-  ├─ HTTP server :7778 ← receives commands from Loxone
-  ├─ MQTT broker       ← publishes state (optional)
-  └─ UDP sender        → pushes state to Loxone Virtual UDP Inputs
+  ├─ dreame_cloud.py     → authenticates + polls status every 30s
+  ├─ dreame_bridge.py    → bridge daemon (runs as background service)
+  ├─ dreame4lox_daemon.sh→ start/stop/status wrapper
+  ├─ HTTP server :7778   ← receives commands from Loxone Virtual Outputs
+  └─ UDP sender          → pushes state to Loxone Virtual UDP Inputs
 ```
+
+Status polling is fully reliable. Commands go via the cloud relay and work
+when the robot's cloud session is active (cleaning, recently used, or awake).
 
 ---
 
 ## Installation
 
-1. Download the plugin ZIP from GitHub Releases
-2. In LoxBerry → Plugin Administration → Install Plugin → upload ZIP
-3. After install, open the Dreame4Lox plugin page
+1. Download the latest `dreame4lox_vX.X.X.zip`
+2. In LoxBerry → **Plugin Administration** → **Install Plugin** → upload ZIP
+3. The installer automatically runs `pip3 install requests paho-mqtt`
+4. Open the **Dreame4Lox** plugin page
 
 ---
 
-## Getting Your Robot Token
+## First Setup
 
-The miio protocol requires a **32-character hex token** from your robot.
+### 1. Enter Dreame Home credentials
 
-### Method 1 — Xiaomi Home app (easiest)
-1. Add your robot to the **Xiaomi Home** (Mi Home) app (not Dreame app)
-2. Install `python-miio`: `pip3 install miio`
-3. Run: `miiocli cloud --username YOUR_EMAIL --password YOUR_PASS`
-4. Find your device and copy the token
+Go to the **Account** tab:
+- **Email** — your Dreame Home app login email
+- **Password** — your Dreame Home app password
+- **Region** — select **Europe (eu)** for Belgium, Netherlands, Germany, etc.
 
-### Method 2 — Packet sniffing (Dreame app)
-Use a tool like `miiocli` with `--debug` or proxy the app traffic.
-See: https://python-miio.readthedocs.io/en/latest/legacy_token_extraction.html
+Click **💾 Save credentials**.
 
-### Method 3 — LAN packet capture
-During robot setup, the token is sent in plaintext over UDP port 54321.
-Use Wireshark to capture it.
+### 2. Discover your robots
 
----
+Click **🔍 Discover my robots**. The plugin logs in and lists all your vacuums
+with their Device IDs. Click **+ Add to config** for each robot.
 
-## Plugin Configuration
+### 3. Start the daemon
 
-### 1. Add Robots
-In the plugin UI → **Robots** tab:
-- Name: friendly name, no spaces (e.g. `X50_Ultra`)
-- IP: robot's local IP (set a DHCP reservation!)
-- Token: 32-char hex token
+Go to the **Robots** tab → **💾 Save** → click **▶ Start**.
 
-### 2. MQTT (optional but recommended)
-Configure your MQTT broker (the LoxBerry MQTT plugin can run one).
-The bridge publishes each robot's state to `dreame4lox/<name>/<property>`.
-
-### 3. Loxone UDP
-Enter your Miniserver IP and UDP port (default 7777).
+The log should show:
+```
+INFO  Cloud login OK for you@email.com (eu)
+INFO  [X50_Ultra] state=charging battery=100%
+INFO  MQTT keepalive active — cloud relay ready for commands
+```
 
 ---
 
@@ -68,88 +68,182 @@ Enter your Miniserver IP and UDP port (default 7777).
 ### Receiving status (Virtual UDP Input)
 
 Create a **Virtual UDP Input** on port **7777**.
-Add **Virtual UDP Input Commands** for each value:
 
-| Command Recognition String | Analog Input |
-|---------------------------|--------------|
-| `DREAME\i/STATE=\v`       | Robot state (0–9) |
-| `DREAME\i/BATTERY=\v`     | Battery % |
-| `DREAME\i/CLEANING=\v`    | 1=cleaning, 0=not |
-| `DREAME\i/CHARGING=\v`    | 1=charging, 0=not |
-| `DREAME\i/ERROR=\v`       | 1=error, 0=ok |
-| `DREAME\i/AREA=\v`        | Cleaned area m² |
-| `DREAME\i/MAINBRUSH=\v`   | Main brush life % |
-| `DREAME\i/SIDEBRUSH=\v`   | Side brush life % |
-| `DREAME\i/FILTER=\v`      | Filter life % |
+Add a **Virtual UDP Input Command** for each value you want:
 
-Replace `\i` with e.g. `X50_Ultra` (must match robot name exactly).
+| Command Recognition String   | Value description                          |
+|------------------------------|--------------------------------------------|
+| `DREAME\i/STATE=\v`          | 0=idle 1=cleaning 2=returning 3=charging 4=paused 5=error |
+| `DREAME\i/BATTERY=\v`        | Battery %                                  |
+| `DREAME\i/CLEANING=\v`       | 1=currently cleaning, 0=not               |
+| `DREAME\i/CHARGING=\v`       | 1=charging/docked, 0=not                  |
+| `DREAME\i/ERROR=\v`          | 1=error condition, 0=ok                   |
+| `DREAME\i/AREA=\v`           | Cleaned area in m²                        |
+| `DREAME\i/TIME=\v`           | Cleaning time in minutes                  |
+| `DREAME\i/MAINBRUSH=\v`      | Main brush life % (–1 if unavailable)     |
+| `DREAME\i/SIDEBRUSH=\v`      | Side brush life %                         |
+| `DREAME\i/FILTER=\v`         | Filter life %                             |
 
-**State codes:**
-- 0 = idle
-- 1 = cleaning
-- 2 = returning to dock
-- 3 = charging
-- 4 = paused
-- 5 = error
-- 9 = unreachable
+Replace `\i` with your robot's name as configured in the plugin,
+e.g. `X50_Ultra_(Gelijkvloers)`. Spaces in the name become underscores.
 
 ### Sending commands (Virtual HTTP Output)
 
-Create a **Virtual HTTP Output** with Address:
+Create a **Virtual HTTP Output** with address:
 ```
 http://<loxberry-ip>:7778
 ```
 
-Add **Virtual HTTP Output Commands**:
+Add **Virtual HTTP Output Commands** (Method: GET, Digital Input: ✓):
 
-| Purpose | URL suffix (ON command) |
-|---------|------------------------|
-| Start cleaning | `/command?robot=X50_Ultra&cmd=start` |
-| Dock / return home | `/command?robot=X50_Ultra&cmd=dock` |
-| Pause | `/command?robot=X50_Ultra&cmd=pause` |
-| Stop | `/command?robot=X50_Ultra&cmd=stop` |
-| Locate (beep) | `/command?robot=X50_Ultra&cmd=locate` |
-| Clean specific rooms | `/command?robot=X50_Ultra&cmd=start_room&segments=[3,5]` |
+| URL suffix (ON command)                              | Action              |
+|------------------------------------------------------|---------------------|
+| `/command?robot=X50_Ultra&cmd=start`                 | Start full clean    |
+| `/command?robot=X50_Ultra&cmd=dock`                  | Return to dock      |
+| `/command?robot=X50_Ultra&cmd=pause`                 | Pause cleaning      |
+| `/command?robot=X50_Ultra&cmd=stop`                  | Stop cleaning       |
+| `/command?robot=X50_Ultra&cmd=locate`                | Locate (beep)       |
+| `/command?robot=X50_Ultra&cmd=start_room&segments=[3,5]` | Clean rooms 3 and 5 |
 
-Set HTTP Method to **GET**, check **Digital Input**.
+Replace `X50_Ultra` with your robot's configured name (URL-encoded if it
+contains special characters).
+
+---
+
+## Command Reliability
+
+Commands are sent via the Dreame Home cloud relay. The relay forwards
+commands to the robot over its Alibaba IoT MQTT session.
+
+**Commands work reliably when:**
+- The robot is actively cleaning
+- The robot was recently active (within ~30 minutes)
+- The robot's dock has recently performed a wash/dry cycle
+
+**Commands may be delayed or fail when:**
+- The robot has been sitting idle in its dock for several hours
+  (cloud session goes into deep sleep)
+- The Dreame Home app has not been opened recently
+
+**Automatic retry:** The plugin retries failed commands up to 3 times with
+increasing delays. The log shows exactly what is happening.
+
+**Best practice for Loxone automations:**
+- "Leave home" trigger → start cleaning (session is fresh)
+- "Return home" trigger → dock (robot is cleaning → session active)
+- Avoid scheduling cleans many hours after the last activity without
+  first waking the robot via the Dreame app or a manual start
+
+> **Note:** This is a cloud relay limitation of the Dreame Home firmware.
+> The robots do not expose any local API (port 54321 and 8123 are disabled
+> in Dreame Home firmware). Mi Home app models support local control but the
+> X50 Ultra and L40 Ultra are Dreame-Home-only devices.
+
+---
+
+## MQTT (Optional)
+
+If you have the LoxBerry MQTT Gateway plugin installed, enable MQTT in the
+plugin settings. Topics published:
+
+```
+dreame4lox/<robot_name>/state          → idle/cleaning/charging/etc.
+dreame4lox/<robot_name>/battery        → 0-100
+dreame4lox/<robot_name>/cleaning       → 0 or 1
+dreame4lox/<robot_name>/charging       → 0 or 1
+dreame4lox/<robot_name>/state_json     → full status as JSON
+```
+
+Send commands by publishing to:
+```
+dreame4lox/<robot_name>/command
+```
+Payload: `start`, `stop`, `dock`, `pause`, `locate`
+or JSON: `{"command": "start_room", "params": {"segments": [3, 5]}}`
+
+---
+
+## SSH / Manual Commands
+
+```bash
+# Daemon control
+bash /opt/loxberry/bin/plugins/dreame4lox/dreame4lox_daemon.sh start
+bash /opt/loxberry/bin/plugins/dreame4lox/dreame4lox_daemon.sh stop
+bash /opt/loxberry/bin/plugins/dreame4lox/dreame4lox_daemon.sh status
+
+# Run in foreground with debug output (great for troubleshooting)
+bash /opt/loxberry/bin/plugins/dreame4lox/dreame4lox_daemon.sh debug
+
+# Watch live log
+tail -f /opt/loxberry/log/plugins/dreame4lox/dreame4lox_daemon.log
+
+# Test command via HTTP
+curl "http://localhost:7778/command?robot=X50_Ultra&cmd=locate"
+
+# Get current status as JSON
+curl "http://localhost:7778/status"
+```
+
+---
+
+## File Locations
+
+| Path | Description |
+|------|-------------|
+| `/opt/loxberry/bin/plugins/dreame4lox/` | Python scripts + daemon |
+| `/opt/loxberry/config/plugins/dreame4lox/dreame4lox.json` | Configuration |
+| `/opt/loxberry/log/plugins/dreame4lox/dreame4lox_daemon.log` | Daemon log |
 
 ---
 
 ## Supported Models
 
-All models supported by python-miio's DreameVacuum class, including:
-- Dreame X50 Ultra
-- Dreame L40 Ultra
+All models registered in the **Dreame Home** app (dreamehome), including:
+- Dreame X50 Ultra / X50 Ultra Complete
+- Dreame L40 Ultra / L40 Ultra AE
 - Dreame X40 Ultra
 - Dreame L10s Ultra
-- Dreame W10 / W10 Pro / W10s Pro
-- Dreame S10 / S10 Pro
-- And many more — see python-miio docs
+- Any model with `dreame.vacuum.*` in its model string
+
+Models that use the **Xiaomi / Mi Home** app are not the target of this
+plugin (those support local miio control via python-miio directly).
 
 ---
 
 ## Troubleshooting
 
-**Robot shows as "unreachable":**
-- Verify IP address is correct and robot is on same subnet as LoxBerry
-- Set a DHCP reservation for the robot so its IP doesn't change
-- Test connectivity: `python3 -c "from miio import DreameVacuum; v=DreameVacuum('YOUR_IP','YOUR_TOKEN'); print(v.status())"`
+**Daemon won't start**
+```bash
+bash /opt/loxberry/bin/plugins/dreame4lox/dreame4lox_daemon.sh debug
+```
 
-**Token is wrong:**
-- Token must be exactly 32 hex characters
-- Some tools return it base64-encoded — convert if needed
+**"No robots configured"**
+Go to Account tab → enter credentials → Discover → add robots → Save.
 
-**X50 Ultra / L40 Ultra use Dreame Home app:**
-- These newer models may not work with Mi Home app token extraction
-- Try Method 2 (packet sniffing) or use the Dreame app + proxy
+**Commands not working / 80001 error**
+The robot's cloud session is inactive. Open the Dreame Home app on your
+phone, start a clean manually, then try the command again. Once the robot
+has been active the session stays alive for ~30 minutes.
+
+**Duplicate log lines**
+Two daemon instances are running. Fix:
+```bash
+pkill -f dreame_bridge.py
+bash /opt/loxberry/bin/plugins/dreame4lox/dreame4lox_daemon.sh start
+```
+
+**Auth failed**
+Check your Dreame Home app email/password and region setting.
+Note: Mi Home / Xiaomi credentials will not work.
 
 ---
 
 ## License
 
-MIT — feel free to contribute, improve, and share!
+MIT — based on reverse-engineered Dreame Home protocol from
+[Tasshack/dreame-vacuum](https://github.com/Tasshack/dreame-vacuum) (MIT).
 
 ## Contributing
 
-Submit issues and pull requests on GitHub.
+Issues and pull requests welcome.
 Discuss in the LoxForum: https://www.loxforum.com
